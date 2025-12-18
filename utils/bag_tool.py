@@ -171,10 +171,13 @@ def message_type_to_csv(stream, msg, parent_content_name=""):
 
 
 def format_csv_filename(bag_name, topic_name, output_dir=OUTPUT_DIR):
-    """Format the output CSV filename."""
+    """Format the output CSV filename with bag-specific subdirectory."""
     safe_topic = topic_name.replace('/', '-')[1:]  # Remove leading slash and replace others
-    filename = f"{bag_name}_{safe_topic}.csv"
-    return os.path.join(output_dir, filename)
+    filename = f"{safe_topic}.csv"
+    # Create subdirectory named after the bag file
+    bag_output_dir = os.path.join(output_dir, bag_name)
+    os.makedirs(bag_output_dir, exist_ok=True)
+    return os.path.join(bag_output_dir, filename)
 
 
 def get_topic_list(bag_path):
