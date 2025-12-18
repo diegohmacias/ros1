@@ -1,0 +1,17 @@
+# Bags Directory
+
+Place your ROS bag files (`.bag`) here.
+
+These files are ignored by git to keep the repository lightweight.
+
+## How to add bag files
+
+```bash
+# Copy from your local machine
+cp /path/to/your/file.bag ./
+
+# Copy from a USB drive
+cp /media/<username>/<drive_name>/*.bag ./
+```
+
+Inside the Docker container, this directory is mounted at `/ros_ws/bags/`.

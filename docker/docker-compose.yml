@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  ros:
+    build: .
+    container_name: ros1_noetic
+    stdin_open: true
+    tty: true
+    network_mode: host
+    volumes:
+      - ..:/ros_ws
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    working_dir: /ros_ws
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - TERM=xterm-256color
+    command: bash -c "source /opt/ros/noetic/setup.bash && bash"
