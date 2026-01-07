@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-ROS1 Bag to CSV Tool with PyQt5 GUI
-Based on: https://github.com/AtsushiSakai/rosbag_to_csv
+ROS1 Bag to CSV Tool with PyQt5 GUI - FIXED VERSION
+Properly populates virtual motor feedback columns
 
 Usage:
     Launch GUI (default):
@@ -142,32 +142,181 @@ class SimplePyQtGUIKit:
 
 
 # =============================================================================
-# CSV Conversion Functions (based on rosbag_to_csv)
+# Message Flattening and Motor Feedback Extraction
 # =============================================================================
-def message_to_csv(stream, msg, flatten=False):
-    """Convert ROS message to CSV format."""
-    try:
-        for s in type(msg).__slots__:
-            val = msg.__getattribute__(s)
-            message_to_csv(stream, val, flatten)
-    except BaseException:
-        msg_str = str(msg)
-        if msg_str.find(",") != -1:
-            if flatten:
-                msg_str = msg_str.strip("(").strip(")").strip(" ")
+def _is_ros_msg(x):
+    """Check if object is a ROS message."""
+    return hasattr(x, "__slots__") and hasattr(x, "_slot_types")
+
+
+def _flatten_msg(msg, parent="", out=None):
+    """
+    Recursively flatten a ROS message (or python builtin) to a dict of column->value.
+    Arrays/lists get indexed: parent.0.field, parent.1.field, ...
+    """
+    if out is None:
+        out = {}
+
+    # Base cases
+    if msg is None:
+        out[parent] = ""
+        return out
+
+    # Primitive
+    if isinstance(msg, (str, int, float, bool)):
+        key = parent if parent else "value"
+        out[key] = msg
+        return out
+
+    # Bytes
+    if isinstance(msg, (bytes, bytearray)):
+        key = parent if parent else "value"
+        out[key] = msg.decode(errors="ignore")
+        return out
+
+    # Dict-like
+    if isinstance(msg, dict):
+        for k, v in msg.items():
+            child = f"{parent}.{k}" if parent else str(k)
+            _flatten_msg(v, child, out)
+        return out
+
+    # List / tuple
+    if isinstance(msg, (list, tuple)):
+        for i, v in enumerate(msg):
+            child = f"{parent}.{i}" if parent else str(i)
+            _flatten_msg(v, child, out)
+        return out
+
+    # ROS message
+    if _is_ros_msg(msg):
+        for slot in msg.__slots__:
+            v = getattr(msg, slot)
+            child = f"{parent}.{slot}" if parent else slot
+            _flatten_msg(v, child, out)
+        return out
+
+    # Fallback
+    key = parent if parent else "value"
+    out[key] = str(msg)
+    return out
+
+
+def _extract_feedback_velocities(flat):
+    """
+    Look through flattened keys to build the two 'virtual' columns:
+    - device_number_37.velocity
+    - device_number_38.velocity
+    
+    Assumes messages contain an array field named 'feedbacks' where each item has
+    'device_number' and 'velocity' fields.
+    
+    FIXED: Now properly extracts and returns velocity values, not just empty strings.
+    """
+    res = {
+        "device_number_37.velocity": "",
+        "device_number_38.velocity": "",
+    }
+
+    # Build a temporary map from idx -> {device_number: X, velocity: Y}
+    buckets = {}
+    for k, v in flat.items():
+        if ".feedbacks." not in k and "feedbacks." not in k:
+            continue
+        try:
+            # Handle both ".feedbacks." and "feedbacks." patterns
+            if ".feedbacks." in k:
+                after = k.split(".feedbacks.", 1)[1]
             else:
-                msg_str = '"' + msg_str + '"'
-        stream.write("," + msg_str)
+                after = k.split("feedbacks.", 1)[1]
+            idx, rest = after.split(".", 1)
+        except ValueError:
+            # Scalar in feedbacks (unlikely), skip
+            continue
+        d = buckets.setdefault(idx, {})
+        if rest.endswith("device_number"):
+            try:
+                d["device_number"] = int(v) if str(v).replace('-','').isdigit() else None
+            except (ValueError, TypeError):
+                d["device_number"] = None
+        elif rest.endswith("velocity"):
+            d["velocity"] = v
+
+    # Map device numbers to their velocities
+    for d in buckets.values():
+        dn = d.get("device_number", None)
+        vel = d.get("velocity", "")
+        if dn == 37:
+            res["device_number_37.velocity"] = vel
+        elif dn == 38:
+            res["device_number_38.velocity"] = vel
+
+    return res
 
 
-def message_type_to_csv(stream, msg, parent_content_name=""):
-    """Write message type headers to CSV."""
-    try:
-        for s in type(msg).__slots__:
-            val = msg.__getattribute__(s)
-            message_type_to_csv(stream, val, ".".join([parent_content_name, s]))
-    except BaseException:
-        stream.write("," + parent_content_name)
+# =============================================================================
+# CSV Conversion Functions (Updated with Motor Feedback Support)
+# =============================================================================
+def message_type_to_csv(stream, msg):
+    """
+    Write header row once, using flattened keys + virtual motor feedback columns.
+    Returns the header order for subsequent rows.
+    
+    FIXED: Only adds virtual columns if feedback data is present in the message.
+    """
+    flat = _flatten_msg(msg)
+    
+    # Check if this message contains motor feedback data
+    has_feedback = any("feedbacks" in k for k in flat.keys())
+    
+    cols = ["time"] + list(flat.keys())
+    
+    # Only add virtual columns if feedback data exists
+    if has_feedback:
+        virtual_cols = ["device_number_37.velocity", "device_number_38.velocity"]
+        cols = cols + virtual_cols
+    
+    # De-duplicate while preserving order
+    seen = set()
+    ordered = []
+    for c in cols:
+        if c not in seen:
+            seen.add(c)
+            ordered.append(c)
+    
+    stream.write(",".join(ordered) + "\n")
+    return ordered
+
+
+def message_to_csv(stream, msg, header_order):
+    """
+    Write a data row matching header_order produced by message_type_to_csv.
+    Handles virtual motor feedback columns only when they're in the header.
+    
+    FIXED: Properly writes values from virtual columns, and only processes them if present.
+    """
+    flat = _flatten_msg(msg)
+    
+    # Only extract virtual columns if they're expected in the header
+    has_virtual_cols = any("device_number_" in col and ".velocity" in col for col in header_order)
+    if has_virtual_cols:
+        virtual = _extract_feedback_velocities(flat)
+    else:
+        virtual = {}
+    
+    row = []
+    for col in header_order:
+        if col == "time":
+            row.append("")  # Placeholder; timestamp already written by caller
+        elif col in virtual:
+            val = virtual.get(col, "")
+            # Write the actual value, not empty string
+            row.append(str(val) if val != "" and val is not None else "")
+        else:
+            row.append(str(flat.get(col, "")))
+    
+    # Skip first element (timestamp already written)
+    stream.write("," + ",".join(row[1:]) + "\n")
 
 
 def format_csv_filename(bag_name, topic_name, output_dir=OUTPUT_DIR):
@@ -207,7 +356,8 @@ def bag_to_csv(bag_path, topic_names, output_dir=OUTPUT_DIR, include_header=True
     
     try:
         bag = rosbag.Bag(bag_path)
-        streamdict = dict()
+        streamdict = {}       # topic -> open file handle
+        header_orders = {}    # topic -> list of header columns
     except Exception as e:
         print_color(f"Failed to load bag file: {e}", Colors.FAIL)
         return []
@@ -216,6 +366,7 @@ def bag_to_csv(bag_path, topic_names, output_dir=OUTPUT_DIR, include_header=True
     
     try:
         for topic, msg, time in bag.read_messages(topics=topic_names):
+            # Open per-topic CSV on first encounter
             if topic in streamdict:
                 stream = streamdict[topic]
             else:
@@ -224,16 +375,22 @@ def bag_to_csv(bag_path, topic_names, output_dir=OUTPUT_DIR, include_header=True
                 streamdict[topic] = stream
                 print_color(f"  Creating: {os.path.basename(csv_path)}", Colors.GREEN)
                 
-                # Write header
+                # Write header and store column order
                 if include_header:
-                    stream.write("time")
-                    message_type_to_csv(stream, msg)
-                    stream.write('\n')
+                    header_order = message_type_to_csv(stream, msg)
+                    header_orders[topic] = header_order
             
-            # Write data row
-            stream.write(datetime.fromtimestamp(time.to_time()).strftime('%Y/%m/%d/%H:%M:%S.%f'))
-            message_to_csv(stream, msg, flatten=not include_header)
-            stream.write('\n')
+            # Write timestamp
+            timestamp = datetime.fromtimestamp(time.to_time()).strftime('%Y/%m/%d/%H:%M:%S.%f')
+            stream.write(timestamp)
+            
+            # Write data row aligned to header order
+            if include_header:
+                message_to_csv(stream, msg, header_orders[topic])
+            else:
+                # Fallback to old behavior without header alignment
+                flat = _flatten_msg(msg)
+                stream.write("," + ",".join(str(v) for v in flat.values()) + "\n")
         
         # Close all streams
         for s in streamdict.values():
