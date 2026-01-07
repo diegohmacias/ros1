@@ -5,6 +5,8 @@ bags/**/*.bag
 # Output CSV files
 output/*.csv
 output/**/*.csv
+output/**/*.txt
+output/*.txt
 
 # Python
 __pycache__/
