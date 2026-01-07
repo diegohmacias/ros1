@@ -9,6 +9,8 @@ RUN apt-get update && apt-get install -y \
     ros-noetic-plotjuggler-ros \
     && rm -rf /var/lib/apt/lists/*
 
+RUN pip3 install --no-cache-dir pandas
+
 # Set up colored terminal
 ENV TERM=xterm-256color
 ENV force_color_prompt=yes
